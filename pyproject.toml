@@ -1,0 +1,10 @@
+[project]
+name = "pi5-5ai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "smbus2>=0.6.1",
+    "spidev>=3.8",
+]
