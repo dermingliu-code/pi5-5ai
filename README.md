@@ -1,0 +1,52 @@
+# Edge AI Tactical Terminal - Wiring & GPIO Mapping
+
+## 🖥️ ST7789 2.4" TFT LCD (SPI)
+| Module Pin | Raspberry Pi 5 GPIO | Physical Pin | Description |
+| :--- | :--- | :--- | :--- |
+| VCC | 5V | 2 or 4 | 5V Power Supply |
+| GND | GND | 6, 9, 14, 20... | Ground |
+| BLK | GPIO 12 | 32 | PWM Backlight Control |
+| SCL | GPIO 11 | 23 | SPI0 SCLK (Clock) |
+| SDA | GPIO 10 | 19 | SPI0 MOSI (Data) |
+| RES | GPIO 25 | 22 | Reset |
+| DC  | GPIO 24 | 18 | Data / Command |
+| CS  | GPIO 5  | 29 | SPI0 CE0 (Chip Select) |
+
+## 🎛️ EC11 Rotary Encoder & KO Button
+| Module Pin | Raspberry Pi 5 GPIO | Physical Pin | Description |
+| :--- | :--- | :--- | :--- |
+| ENCODER A | GPIO 23 | 16 | Phase A |
+| ENCODER B | GPIO 6  | 31 | Phase B |
+| PUSH BTN  | GPIO 17 | 11 | Enter / Confirm (Pull-up) |
+| KO BUTTON | GPIO 22 | 15 | Back / Screen Sleep (Pull-up) |
+| GND       | GND     | Any GND| Common Ground for switches |
+
+## 🎤 INMP441 I2S Digital Microphone
+| Module Pin | Raspberry Pi 5 GPIO | Physical Pin | Description |
+| :--- | :--- | :--- | :--- |
+| VDD | 3.3V | 1 or 17 | 3.3V Power Supply |
+| GND | GND  | Any GND | Ground |
+| L/R | GND  | Any GND | Grounded for Left Channel |
+| SD  | GPIO 20 | 38 | I2S Data In (DIN) |
+| SCK | GPIO 18 | 12 | I2S Bit Clock (BCLK) |
+| WS  | GPIO 19 | 35 | I2S Word Select (LRCLK) |
+
+## 💡 Feedback Devices (Actuators)
+| Module | Module Pin | Raspberry Pi GPIO | Physical Pin | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| Buzzer       | Signal | GPIO 26 | 37 | PWM Audio Feedback |
+| Buzzer       | GND    | GND     | Any GND | Ground |
+| LED Filament | Signal | GPIO 13 | 33 | PWM Visual Feedback |
+| LED Filament | GND    | GND     | Any GND | Ground |
+
+## 🌡️ Sensors & Camera
+| Module | Module Pin | Raspberry Pi GPIO | Physical Pin | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| AHT11/20 | VCC | 3.3V | 1 or 17 | 3.3V Power |
+| AHT11/20 | GND | GND  | Any GND | Ground |
+| AHT11/20 | SDA | GPIO 2 | 3 | I2C1 SDA (Data) |
+| AHT11/20 | SCL | GPIO 3 | 5 | I2C1 SCL (Clock) |
+| Camera Mod 3 | Ribbon | MIPI CSI Port | - | Native Camera Ribbon Cable |
+
+---
+**Note:** All buttons (Encoder Push and KO Button) are configured with internal Pull-Up resistors in the software (`pull_up=True`). Their logic is active-low (connected to GND when pressed).
