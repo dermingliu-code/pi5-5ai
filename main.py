@@ -1,5 +1,5 @@
 # 檔案名稱: main.py
-import sys, time, os, queue, datetime, threading, math
+import sys, time, os, queue, datetime, threading, math, subprocess
 import cv2, numpy as np, psutil, requests
 import sounddevice as sd
 import board, busio, digitalio
@@ -7,11 +7,11 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 import adafruit_rgb_display.st7789 as st7789
 from gpiozero import RotaryEncoder, Button, PWMOutputDevice
 
-# --- Rich 函式庫 (高密度排版) ---
+# --- Rich 函式庫 (高密度終端機排版) ---
 from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
-from rich.console import Console, Group  # 【修正】：引入 Group 來安全地堆疊排版
+from rich.console import Console, Group
 from rich.columns import Columns
 from rich.align import Align
 from rich import box
@@ -45,16 +45,45 @@ try:
     sensor_aht = adafruit_ahtx0.AHTx0(i2c)
 except: sensor_aht = None
 
+# ==========================================
+# 🔤 1.5 自動化科技字型部署引擎
+# ==========================================
+font_dir = "fonts"
+if not os.path.exists(font_dir): os.makedirs(font_dir)
+
+font_urls = {
+    "ShareTechMono": "https://github.com/google/fonts/raw/main/ofl/sharetechmono/ShareTechMono-Regular.ttf",
+    "RobotoMono-Bold": "https://github.com/google/fonts/raw/main/apache/robotomono/RobotoMono-Bold.ttf",
+    "RobotoMono-Regular": "https://github.com/google/fonts/raw/main/apache/robotomono/RobotoMono-Regular.ttf"
+}
+
+font_paths = {}
+for name, url in font_urls.items():
+    path = os.path.join(font_dir, f"{name}.ttf")
+    font_paths[name] = path
+    if not os.path.exists(path):
+        print(f"正在為您下載戰術字型: {name} ...")
+        try:
+            with open(path, "wb") as f: f.write(requests.get(url, timeout=10).content)
+        except: pass
+
 try:
-    f_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
-    f_item  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
-    f_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
-    f_tiny  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
-except:
-    f_title = f_item = f_small = f_tiny = ImageFont.load_default()
+    f_title = ImageFont.truetype(font_paths.get("ShareTechMono", ""), 18)
+    f_item  = ImageFont.truetype(font_paths.get("RobotoMono-Bold", ""), 15)
+    f_small = ImageFont.truetype(font_paths.get("RobotoMono-Regular", ""), 12)
+    f_tiny  = ImageFont.truetype(font_paths.get("RobotoMono-Regular", ""), 10)
+except Exception as e:
+    print(f"⚠️ 使用系統預設字型 ({e})")
+    try:
+        f_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+        f_item  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
+        f_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+        f_tiny  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+    except:
+        f_title = f_item = f_small = f_tiny = ImageFont.load_default()
 
 # ==========================================
-# 🧠 2. 狀態旗標與軍規終端機引擎 (高密度)
+# 🧠 2. 狀態旗標與軍規終端機引擎
 # ==========================================
 app_exit_flag = False   
 screen_on = True        
@@ -80,8 +109,6 @@ def update_term_log(msg, level="INFO"):
         log_cache.pop(0)
 
 def generate_dashboard():
-    """產生高密度的 Rich 儀表板"""
-    
     t_hw = Table(box=box.SIMPLE_HEAD, expand=True, padding=(0, 1))
     t_hw.add_column("CORE HW", style="cyan")
     t_hw.add_column("VALUE", style="green", justify="right")
@@ -108,14 +135,12 @@ def generate_dashboard():
 
     top_bar = f"[bold cyan]TACTICAL EDGE OS[/bold cyan] | APP: [bold yellow on red] {sys_status['app']} [/bold yellow on red]"
     
-    # 【核心修復】：使用 Group 安全地將不同排版物件垂直堆疊
     content_group = Group(
         top_bar,
-        "", # 空白行
+        "",
         Columns([p_hw, p_sens], expand=True),
         p_log
     )
-    
     return Align.left(Panel(content_group, border_style="cyan"))
 
 class TacticalDashboard:
@@ -182,7 +207,8 @@ def draw_loading_screen(module_name):
     update_term_log(f"Loading {module_name}...")
     img = Image.new("RGB", (SCREEN_W, SCREEN_H), (10, 15, 20))
     draw = ImageDraw.Draw(img)
-    draw_grid_bg(draw); draw_top_bar(draw)
+    draw.rectangle((0, 0, SCREEN_W, 18), fill=(20, 30, 40))
+    draw.text((5, 2), f"TACTICAL-OS", font=f_tiny, fill=(0, 255, 255))
     draw.text((10, 100), f"INITIALIZING...", font=f_title, fill=(0, 255, 255))
     draw.text((10, 130), module_name, font=f_small, fill=(200, 200, 200))
     push_to_screen(img)
@@ -250,65 +276,174 @@ def app_system_info():
     app_exit_flag = False; led_mode = "SOLID"
     sys_status["app"] = "CORE INFO"
     
+    def get_cmd(cmd):
+        try: return subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.DEVNULL).strip()
+        except: return "ERR"
+
     while not app_exit_flag:
-        img = Image.new("RGB", (SCREEN_W, SCREEN_H), (10, 10, 15))
+        img = Image.new("RGB", (SCREEN_W, SCREEN_H), (5, 5, 10))
         draw = ImageDraw.Draw(img)
         draw_grid_bg(draw); draw_top_bar(draw)
-        draw.text((10, 30), ">> CORE TELEMETRY", font=f_title, fill=(0, 200, 255))
+
+        cpu_u = psutil.cpu_percent()
+        temp_raw = get_cmd("vcgencmd measure_temp")
+        temp_str = temp_raw.replace("temp=", "") if "temp=" in temp_raw else "N/A"
+        try: temp_val = float(temp_str.replace("'C", "").replace("C", ""))
+        except: temp_val = 0.0
+
+        freq_raw = get_cmd("vcgencmd measure_clock arm")
+        try: freq_str = f"{int(freq_raw.split('=')[1]) / 1000000000:.2f} GHz"
+        except: freq_str = "N/A"
+        volts_raw = get_cmd("vcgencmd measure_volts core")
+        volts_str = volts_raw.replace("volt=", "") if "volt=" in volts_raw else "N/A"
+
+        throttle_raw = get_cmd("vcgencmd get_throttled")
+        is_throttled = "0x0" not in throttle_raw
+        fan_state = get_cmd("cat /sys/class/thermal/cooling_device0/cur_state")
+
+        ram_mem = psutil.virtual_memory()
+        ram_u = ram_mem.percent
+        ram_tot = f"{ram_mem.total / (1024**3):.1f}G"
+        disk_u = psutil.disk_usage('/').percent
+
+        ip_addr = get_cmd("hostname -I | awk '{print $1}'")
+        if not ip_addr or ip_addr == "ERR": ip_addr = "OFFLINE"
+        uptime_str = get_cmd("uptime -p").replace("up ", "")
         
-        cpu, ram, disk = psutil.cpu_percent(), psutil.virtual_memory().percent, psutil.disk_usage('/').percent
-        metrics = [("CPU LOAD", cpu, (0, 255, 100)), ("MEM LOAD", ram, (0, 150, 255)), ("DISK USE", disk, (200, 200, 200))]
-        
-        y = 70
-        for name, val, color in metrics:
-            draw.text((15, y), f"{name}: {val}%", font=f_item, fill=(255, 255, 255))
-            draw.rectangle((15, y+20, 300, y+28), outline=(50, 50, 50))
-            draw.rectangle((17, y+22, 17 + int(280*(val/100)), y+26), fill=color)
-            y += 45
-            
+        eeprom_ver = get_cmd("rpi-eeprom-update | head -n 1 | awk '{print $3}'")
+        usb_count = get_cmd("lsusb | wc -l")
+
+        lx, rx, cw = 8, 164, 148 
+
+        draw.rounded_rectangle((lx, 24, lx+cw, 125), radius=4, outline=(0, 150, 255), fill=(10, 20, 30))
+        draw.text((lx+5, 28), "[ CPU & SOC PWR ]", font=f_tiny, fill=(0, 150, 255))
+        draw.text((lx+5, 43), f"LOAD: {cpu_u}%", font=f_small, fill=(255, 255, 255))
+        bar_w = cw - 10
+        draw.rectangle((lx+5, 58, lx+5+bar_w, 61), outline=(50, 50, 50))
+        draw.rectangle((lx+5, 58, lx+5+int(bar_w*(cpu_u/100)), 61), fill=(0, 255, 100))
+        t_color = (255, 50, 50) if temp_val > 75 else (0, 255, 100)
+        draw.text((lx+5, 68), f"TEMP: {temp_str}", font=f_small, fill=t_color)
+        draw.text((lx+5, 86), f"FREQ: {freq_str}", font=f_small, fill=(200, 200, 200))
+        draw.text((lx+5, 104), f"VOLT: {volts_str}", font=f_small, fill=(255, 150, 0))
+
+        draw.rounded_rectangle((lx, 130, lx+cw, 230), radius=4, outline=(150, 100, 255), fill=(20, 10, 30))
+        draw.text((lx+5, 134), "[ MEMORY & I/O ]", font=f_tiny, fill=(150, 100, 255))
+        draw.text((lx+5, 150), f"RAM : {ram_u}%", font=f_small, fill=(255, 255, 255))
+        draw.rectangle((lx+5, 165, lx+5+bar_w, 168), outline=(50, 50, 50))
+        draw.rectangle((lx+5, 165, lx+5+int(bar_w*(ram_u/100)), 168), fill=(150, 100, 255))
+        draw.text((lx+5, 175), f"DISK: {disk_u}%", font=f_small, fill=(255, 255, 255))
+        draw.rectangle((lx+5, 190, lx+5+bar_w, 193), outline=(50, 50, 50))
+        draw.rectangle((lx+5, 190, lx+5+int(bar_w*(disk_u/100)), 193), fill=(100, 200, 255))
+        draw.text((lx+5, 205), f"PHYSICAL MEM: {ram_tot}", font=f_tiny, fill=(150, 150, 150))
+
+        draw.rounded_rectangle((rx, 24, rx+cw, 125), radius=4, outline=(255, 150, 0), fill=(30, 20, 10))
+        draw.text((rx+5, 28), "[ DIAGNOSTICS ]", font=f_tiny, fill=(255, 150, 0))
+        thr_color = (255, 50, 50) if is_throttled else (0, 255, 100)
+        thr_txt = "THROTTLED!" if is_throttled else "STABLE(0x0)"
+        draw.text((rx+5, 45), f"PWR : {thr_txt}", font=f_tiny, fill=thr_color)
+        fan_txt = f"LVL {fan_state}" if fan_state != "ERR" else "N/A"
+        draw.text((rx+5, 62), f"FAN : {fan_txt}", font=f_tiny, fill=(200, 200, 200))
+        draw.text((rx+5, 79), "OS  : Debian 12", font=f_tiny, fill=(200, 200, 200))
+        up_str = uptime_str[:18] + "..." if len(uptime_str) > 18 else uptime_str
+        draw.text((rx+5, 96), f"UP  : {up_str}", font=f_tiny, fill=(0, 255, 255))
+
+        draw.rounded_rectangle((rx, 130, rx+cw, 230), radius=4, outline=(0, 255, 150), fill=(10, 30, 20))
+        draw.text((rx+5, 134), "[ NET & COMMS ]", font=f_tiny, fill=(0, 255, 150))
+        draw.text((rx+5, 150), "IP ADDRESS:", font=f_tiny, fill=(200, 200, 200))
+        draw.text((rx+5, 163), ip_addr, font=f_small, fill=(0, 255, 150))
+        usb_txt = usb_count if usb_count != "ERR" else "0"
+        draw.text((rx+5, 185), f"USB DEVS: {usb_txt}", font=f_tiny, fill=(200, 200, 200))
+        rom_str = eeprom_ver[:12] if eeprom_ver != "ERR" else "Unknown"
+        draw.text((rx+5, 202), f"ROM: {rom_str}", font=f_tiny, fill=(150, 150, 150))
+
         push_to_screen(img)
-        time.sleep(0.5)
+        time.sleep(0.5) 
 
 def app_environment():
     global app_exit_flag, led_mode
     app_exit_flag = False; led_mode = "BREATHE"
     sys_status["app"] = "ENV RADAR"
     
-    draw_loading_screen("Weather API")
-    update_term_log("Fetching Open-Meteo API...")
+    draw_loading_screen("Weather & Forecast API")
+    update_term_log("Fetching Open-Meteo 5-Day API...")
+    
+    forecast_data = []
+    web_t, web_h = "--", "--"
     try:
-        url = "https://api.open-meteo.com/v1/forecast?latitude=25.08&longitude=121.59&current_weather=true&hourly=relativehumidity_2m"
-        req = requests.get(url, timeout=3).json()
-        web_t, web_h = req['current_weather']['temperature'], req['hourly']['relativehumidity_2m'][0]
+        url = "https://api.open-meteo.com/v1/forecast?latitude=25.08&longitude=121.59&current_weather=true&hourly=relativehumidity_2m&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=auto"
+        req = requests.get(url, timeout=4).json()
+        web_t = req['current_weather']['temperature']
+        web_h = req['hourly']['relativehumidity_2m'][0]
+        
+        daily = req['daily']
+        for i in range(5):
+            date_str = daily['time'][i] 
+            dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+            day_name = dt.strftime("%a").upper() 
+            if i == 0: day_name = "TDA"
+            
+            w_code = daily['weathercode'][i]
+            t_max = daily['temperature_2m_max'][i]
+            t_min = daily['temperature_2m_min'][i]
+            forecast_data.append({"day": day_name, "code": w_code, "max": t_max, "min": t_min})
+            
         sys_status["env_web"] = f"{web_t}°C / {web_h}%"
-        update_term_log("API Data Synced")
-    except: 
-        web_t, web_h = "--", "--"
+        update_term_log("5-Day Forecast Synced")
+    except Exception as e:
         sys_status["env_web"] = "[red]ERROR[/red]"
-        update_term_log("API Fetch Failed", "WARN")
+        update_term_log(f"API Fetch Failed: {e}", "WARN")
+
+    def get_wx_style(code):
+        if code <= 1: return "[SUN]", (255, 200, 0)      
+        if code <= 3: return "[CLD]", (200, 200, 200)    
+        if code <= 49: return "[FOG]", (150, 150, 150)   
+        if code <= 69: return "[RAN]", (0, 150, 255)     
+        if code <= 79: return "[SNW]", (255, 255, 255)   
+        if code <= 99: return "[STM]", (255, 50, 255)    
+        return "[UNK]", (100, 100, 100)
 
     while not app_exit_flag:
         loc_t = f"{sensor_aht.temperature:.1f}" if sensor_aht else "--"
         loc_h = f"{sensor_aht.relative_humidity:.1f}" if sensor_aht else "--"
         sys_status["env_loc"] = f"{loc_t}°C / {loc_h}%"
         
-        img = Image.new("RGB", (SCREEN_W, SCREEN_H), (10, 15, 10))
+        img = Image.new("RGB", (SCREEN_W, SCREEN_H), (5, 5, 10))
         draw = ImageDraw.Draw(img)
         draw_grid_bg(draw); draw_top_bar(draw)
-        draw.text((10, 30), ">> ENV RADAR", font=f_title, fill=(0, 255, 100))
         
-        draw.rounded_rectangle((10, 60, 155, 150), radius=5, outline=(0, 255, 100), fill=(10, 30, 10))
-        draw.text((20, 65), "[ AHT11 LOCAL ]", font=f_small, fill=(0, 255, 100))
-        draw.text((20, 90), f"{loc_t}°C", font=f_title, fill=(255, 255, 255))
-        draw.text((20, 120), f"{loc_h}% RH", font=f_item, fill=(200, 200, 200))
+        lx, rx, cw, hy = 8, 164, 148, 110
         
-        draw.rounded_rectangle((165, 60, 310, 150), radius=5, outline=(0, 150, 255), fill=(10, 10, 30))
-        draw.text((175, 65), "[ WEB: NEIHU ]", font=f_small, fill=(0, 150, 255))
-        draw.text((175, 90), f"{web_t}°C", font=f_title, fill=(255, 255, 255))
-        draw.text((175, 120), f"{web_h}% RH", font=f_item, fill=(200, 200, 200))
+        draw.rounded_rectangle((lx, 24, lx+cw, hy), radius=4, outline=(0, 255, 100), fill=(10, 30, 10))
+        draw.text((lx+5, 28), "[ LOCAL SENSOR ]", font=f_tiny, fill=(0, 255, 100))
+        draw.text((lx+5, 48), f"{loc_t}°C", font=f_title, fill=(255, 255, 255))
+        draw.text((lx+5, 80), f"RH: {loc_h}%", font=f_small, fill=(200, 255, 200))
+        
+        draw.rounded_rectangle((rx, 24, rx+cw, hy), radius=4, outline=(0, 150, 255), fill=(10, 10, 30))
+        draw.text((rx+5, 28), "[ WEB: NEIHU ]", font=f_tiny, fill=(0, 150, 255))
+        draw.text((rx+5, 48), f"{web_t}°C", font=f_title, fill=(255, 255, 255))
+        draw.text((rx+5, 80), f"RH: {web_h}%", font=f_small, fill=(200, 200, 255))
+
+        fy1, fy2 = 118, 230
+        draw.rounded_rectangle((lx, fy1, rx+cw, fy2), radius=4, outline=(100, 100, 150), fill=(15, 15, 20))
+        draw.text((lx+5, fy1+4), ">> 5-DAY TACTICAL FORECAST", font=f_tiny, fill=(150, 150, 255))
+        
+        if forecast_data:
+            col_w = (rx + cw - lx) / 5
+            for i, day_data in enumerate(forecast_data):
+                cx = lx + int(i * col_w)
+                if i > 0: draw.line((cx, fy1+20, cx, fy2-5), fill=(50, 50, 70), width=1)
+                
+                sym, c_color = get_wx_style(day_data['code'])
+                
+                draw.text((cx+12, fy1+22), day_data['day'], font=f_tiny, fill=(200, 200, 200))
+                draw.text((cx+10, fy1+42), sym, font=f_small, fill=c_color)
+                draw.text((cx+12, fy1+65), f"H:{int(day_data['max'])}", font=f_tiny, fill=(255, 100, 100))
+                draw.text((cx+12, fy1+85), f"L:{int(day_data['min'])}", font=f_tiny, fill=(100, 200, 255))
+        else:
+            draw.text((lx+60, fy1+50), "FORECAST DATA UNAVAILABLE", font=f_small, fill=(255, 50, 50))
 
         push_to_screen(img)
-        time.sleep(1)
+        time.sleep(1) 
 
 def app_camera():
     global app_exit_flag, led_mode
@@ -349,24 +484,30 @@ def app_camera():
         picam2_global.stop()
         sys_status["cam"] = "[dim]Standby 🔴[/dim]"
 
+# ==========================================
+# 🎵 戰術三頻獨立鎖定 (Tri-Band Tactical Radar)
+# ==========================================
 def app_audio_fft():
     global app_exit_flag, led_mode
     app_exit_flag = False; led_mode = "AUDIO" 
-    sys_status["app"] = "AUDIO ANLZ"
+    sys_status["app"] = "AUDIO RADAR"
     
-    CHUNK = 2048; RATE = 44100; BARS = 64
+    CHUNK = 2048; RATE = 44100; BARS = 40 
     audio_queue = queue.Queue()
     freqs = np.fft.rfftfreq(CHUNK, 1 / RATE)
 
     def cb(indata, frames, time_info, status):
         audio_queue.put(indata[:, 0].astype(np.float32) / 2147483648.0)
 
-    draw_loading_screen("Audio Buffers")
-    update_term_log("I2S Audio Stream Active")
+    draw_loading_screen("Acoustic Radar")
+    update_term_log("Initializing Tri-Band FFT Engine...")
     
     try:
         stream = sd.InputStream(samplerate=RATE, channels=2, dtype='int32', blocksize=CHUNK, callback=cb)
         stream.start()
+        
+        peak_holds = [0.0] * BARS
+        last_log_time = 0
         
         while not app_exit_flag:
             try: data = audio_queue.get_nowait()
@@ -377,27 +518,81 @@ def app_audio_fft():
             sys_status["audio_rms"] = rms
             
             mags = np.abs(np.fft.rfft(data * np.hanning(CHUNK)))
-            mags[:5] = 0
-            binned = [np.max(b)*10 for b in np.array_split(mags[:len(mags)//2], BARS)]
-            top_f = freqs[np.argsort(mags)[-3:][::-1]]
+            mags[:3] = 0 
             
-            sys_status["audio_freq"] = f"{int(top_f[0])}Hz"
+            half_mags = mags[:len(mags)//2]
+            bins = np.array_split(half_mags, BARS)
+            
+            idx_low_end = sum(len(b) for b in bins[:8])
+            idx_mid_end = sum(len(b) for b in bins[:25])
+            
+            idx_low = np.argmax(half_mags[:idx_low_end])
+            idx_mid = idx_low_end + np.argmax(half_mags[idx_low_end:idx_mid_end])
+            idx_hi  = idx_mid_end + np.argmax(half_mags[idx_mid_end:])
+
+            top_f_bands = [
+                (freqs[idx_low], (0, 255, 255), "LOW"),  
+                (freqs[idx_mid], (0, 255, 100), "MID"),  
+                (freqs[idx_hi],  (255, 50, 200), "HI ")  
+            ]
+            
+            binned = [np.max(b)*10 for b in bins]
+            sys_status["audio_freq"] = f"{int(freqs[idx_mid])}Hz"
+            
+            if time.time() - last_log_time > 2.0:
+                update_term_log(f"L:{int(freqs[idx_low])} M:{int(freqs[idx_mid])} H:{int(freqs[idx_hi])} | RMS:{rms:.3f}")
+                last_log_time = time.time()
                 
             img = Image.new("RGB", (SCREEN_W, SCREEN_H), (5, 5, 10))
             draw = ImageDraw.Draw(img)
             draw_grid_bg(draw); draw_top_bar(draw)
 
-            base_y = 180
-            for i in range(BARS):
-                h = min(int(binned[i] * 120), 140)
-                c = (0, 255, 255) if i < 20 else (0, 255, 100) if i < 45 else (255, 50, 50)
-                draw.rectangle([i*5, base_y-h, i*5+4, base_y], fill=c)
+            cx, cy = 160, 115
+            base_r = 25 + min(rms * 120, 20) 
+            
+            draw.ellipse((cx-base_r, cy-base_r, cx+base_r, cy+base_r), outline=(0, 255, 255), width=2)
+            draw.ellipse((cx-base_r+4, cy-base_r+4, cx+base_r-4, cy+base_r-4), outline=(0, 100, 200), width=1)
+            draw.text((cx-12, cy-6), "FFT", font=f_small, fill=(0, 255, 255))
 
-            for idx in range(3):
-                if idx < len(top_f):
-                    x = idx * 106
-                    draw.rounded_rectangle((x+5, 200, x+101, 230), radius=3, outline=(50, 50, 50), fill=(20, 20, 25))
-                    draw.text((x+12, 206), f"{int(top_f[idx])}Hz", font=f_item, fill=(255, 255, 255))
+            for i in range(BARS):
+                val = binned[i]
+                if val > peak_holds[i]: peak_holds[i] = val
+                else: peak_holds[i] = max(0, peak_holds[i] - 0.05) 
+
+                mag_h = min(int(val * 100), 70)
+                peak_h = min(int(peak_holds[i] * 100), 70)
+
+                angle = (i / BARS) * math.pi - (math.pi / 2) 
+                c_cos, c_sin = math.cos(angle), math.sin(angle)
+
+                rx1, ry1 = cx + base_r * c_cos, cy + base_r * c_sin
+                rx2, ry2 = cx + (base_r + mag_h) * c_cos, cy + (base_r + mag_h) * c_sin
+                rpx, rpy = cx + (base_r + peak_h + 3) * c_cos, cy + (base_r + peak_h + 3) * c_sin
+
+                c = (0, 255, 255) if i < 8 else (0, 255, 100) if i < 25 else (255, 50, 200)
+                pc = (255, 255, 255) 
+
+                draw.line((rx1, ry1, rx2, ry2), fill=c, width=2)
+                draw.rectangle((rpx-1, rpy-1, rpx+1, rpy+1), fill=pc) 
+
+                lx1, lx2, lpx = cx - (rx1 - cx), cx - (rx2 - cx), cx - (rpx - cx)
+                draw.line((lx1, ry1, lx2, ry2), fill=c, width=2)
+                draw.rectangle((lpx-1, rpy-1, lpx+1, rpy+1), fill=pc)
+
+            # ------------------------------------------
+            # 🎯 戰術三頻獨立鎖定框 (三等分對稱滿版佈局)
+            # ------------------------------------------
+            draw.line((5, 193, 315, 193), fill=(0, 100, 200), width=1)
+            for idx, (freq_val, color, label) in enumerate(top_f_bands):
+                # 3等分佈局: 起點 5, 110, 215 (每格寬度 100px，間距 5px)
+                x = 5 + idx * 105
+                draw.rectangle((x, 198, x+100, 236), outline=color, fill=(10, 20, 30))
+                
+                # 標籤與數值上下分層，完美解決 5 位數頻率超出框線問題
+                draw.text((x+5, 201), f"[{label}]", font=f_tiny, fill=color)
+                # 加入千位符號，大幅提升視覺專業度
+                draw.text((x+5, 216), f"{int(freq_val):,} Hz", font=f_item, fill=(255, 255, 255))
+
             push_to_screen(img)
             
     except Exception as e:

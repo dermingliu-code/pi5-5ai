@@ -16,6 +16,14 @@ from rich.columns import Columns
 from rich.align import Align
 from rich import box
 
+# --- 語音辨識引擎 ---
+try:
+    import speech_recognition as sr
+    import scipy.io.wavfile as wav
+    HAS_VOICE = True
+except ImportError:
+    HAS_VOICE = False
+
 console = Console()
 
 # ==========================================
@@ -62,7 +70,6 @@ for name, url in font_urls.items():
     path = os.path.join(font_dir, f"{name}.ttf")
     font_paths[name] = path
     if not os.path.exists(path):
-        print(f"正在為您下載戰術字型: {name} ...")
         try:
             with open(path, "wb") as f: f.write(requests.get(url, timeout=10).content)
         except: pass
@@ -73,7 +80,6 @@ try:
     f_small = ImageFont.truetype(font_paths.get("RobotoMono-Regular", ""), 12)
     f_tiny  = ImageFont.truetype(font_paths.get("RobotoMono-Regular", ""), 10)
 except Exception as e:
-    print(f"⚠️ 使用系統預設字型 ({e})")
     try:
         f_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
         f_item  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
@@ -88,6 +94,7 @@ except Exception as e:
 app_exit_flag = False   
 screen_on = True        
 system_running = True   
+voice_target_idx = None 
 
 sys_status = {
     "app": "BOOTING",
@@ -95,7 +102,9 @@ sys_status = {
     "env_web": "Wait...", "env_loc": "Wait...",
     "cam": "[dim]Standby[/dim]",
     "audio_rms": 0.0, "audio_freq": "0Hz",
-    "ai_target": "[dim]None[/dim]", "ai_conf": "0%"
+    "ai_target": "[dim]None[/dim]", "ai_conf": "0%",
+    "voice_state": "[dim]Initializing...[/dim]", 
+    "voice_cmd": "[dim]Waiting...[/dim]"         
 }
 
 log_cache = []
@@ -124,10 +133,10 @@ def generate_dashboard():
     t_sens.add_column("VALUE", style="yellow", justify="right")
     t_sens.add_row("Env (Loc)", sys_status["env_loc"])
     t_sens.add_row("Env (Web)", sys_status["env_web"])
-    t_sens.add_row("Audio RMS", f"{sys_status['audio_rms']:.4f}")
     t_sens.add_row("Audio Freq", sys_status["audio_freq"])
     t_sens.add_row("AI Target", sys_status["ai_target"])
-    t_sens.add_row("AI Conf.", sys_status["ai_conf"])
+    t_sens.add_row("Voice Eng.", sys_status["voice_state"])
+    t_sens.add_row("Last Heard", sys_status["voice_cmd"])
     p_sens = Panel(t_sens, border_style="blue", padding=(0, 0))
 
     log_text = "\n".join(log_cache) if log_cache else "Waiting for system events..."
@@ -135,12 +144,7 @@ def generate_dashboard():
 
     top_bar = f"[bold cyan]TACTICAL EDGE OS[/bold cyan] | APP: [bold yellow on red] {sys_status['app']} [/bold yellow on red]"
     
-    content_group = Group(
-        top_bar,
-        "",
-        Columns([p_hw, p_sens], expand=True),
-        p_log
-    )
+    content_group = Group(top_bar, "", Columns([p_hw, p_sens], expand=True), p_log)
     return Align.left(Panel(content_group, border_style="cyan"))
 
 class TacticalDashboard:
@@ -164,6 +168,151 @@ def handle_ko_press():
     update_term_log("KO Button Pressed", "WARN")
     
 btn_ko.when_pressed = handle_ko_press
+
+# 【參數優化】: 將增益放大至 25 倍，大幅提升麥克風物理靈敏度
+AUDIO_GAIN = 25.0 
+
+# ==========================================
+# 🎤 2.5 終極無衝突語音引擎 (高靈敏度版)
+# ==========================================
+def voice_daemon():
+    global voice_target_idx, app_exit_flag, system_running
+    if not HAS_VOICE:
+        sys_status["voice_state"] = "[red]OFFLINE (Missing Libs)[/red]"
+        return
+
+    cmd_map = {
+        "狀態": 0, "系統": 0, "核心": 0,
+        "雷達": 1, "天氣": 1, "環境": 1,
+        "相機": 2, "影像": 2, "視覺": 2,
+        "聲音": 3, "頻譜": 3, "分析": 3,
+        "守衛": 4, "防護": 4, "警報": 4,
+        "關機": 5, "退出": 5, "停止": 5
+    }
+
+    r = sr.Recognizer()
+    update_term_log("Voice Pipeline Active (High Sensitivity).")
+    
+    RATE = 44100
+    CHUNK = 8192  
+
+    while system_running:
+        if sys_status["app"] == "AUDIO RADAR":
+            sys_status["voice_state"] = "[dim]MUTED (FFT Active)[/dim]"
+            time.sleep(0.5)
+            continue
+
+        voice_queue = queue.Queue()
+
+        def voice_cb(indata, frames, time_info, status):
+            voice_queue.put((indata[:, 0].astype(np.float32) / 2147483648.0) * AUDIO_GAIN)
+
+        sys_status["voice_state"] = "[cyan]▃▅▇ CALIBRATING NOISE...[/cyan]"
+        try:
+            stream = sd.InputStream(samplerate=RATE, channels=2, dtype='int32', blocksize=CHUNK, callback=voice_cb)
+            stream.start()
+
+            for _ in range(5):
+                try: voice_queue.get(timeout=1)
+                except: pass
+
+            samples = []
+            for _ in range(5): 
+                try:
+                    mono_data = voice_queue.get(timeout=1)
+                    samples.append(np.sqrt(np.mean(mono_data**2))) 
+                except: pass
+            
+            # 【參數優化】: 降低底噪乘數至 1.2，使判定條件更寬鬆
+            ambient_noise_level = max(np.mean(samples) * 1.2, 0.005) 
+            update_term_log(f"Noise Calibrated. Threshold: {ambient_noise_level:.4f}")
+
+            audio_data = []
+            is_recording = False
+            silence_chunks = 0
+            recording_chunks = 0 
+            
+            while system_running and sys_status["app"] != "AUDIO RADAR":
+                try:
+                    mono_data = voice_queue.get(timeout=1)
+                except queue.Empty:
+                    continue
+
+                vol = np.sqrt(np.mean(mono_data**2))
+                
+                relative_vol = max(0, vol - ambient_noise_level)
+                bar_len = min(10, int(relative_vol * 400)) 
+                bar_str = "|" * bar_len + " " * (10 - bar_len)
+                
+                # 【參數優化】: 觸發條件從 1.5 倍降至 1.2 倍
+                if vol > ambient_noise_level * 1.2:
+                    if not is_recording:
+                        is_recording = True
+                        sys_status["voice_cmd"] = "[dim]Capturing...[/dim]"
+                    silence_chunks = 0
+                    recording_chunks += 1
+                    sys_status["voice_state"] = f"[green]▶ REC [{bar_str}][/green]"
+                    audio_data.append(mono_data) 
+                    
+                    if recording_chunks > 30: 
+                        sys_status["voice_state"] = "[yellow]⚠️ FORCED TIMEOUT[/yellow]"
+                        silence_chunks = 99 
+                        
+                elif is_recording:
+                    silence_chunks += 1
+                    recording_chunks += 1
+                    sys_status["voice_state"] = f"[yellow]⏸ WAIT [{bar_str}][/yellow]"
+                    audio_data.append(mono_data) 
+                    
+                    if silence_chunks > 4: 
+                        sys_status["voice_state"] = "[magenta]⚙️ PROCESSING...[/magenta]"
+                        
+                        rec_audio = np.concatenate(audio_data)
+                        rec_audio_clipped = np.clip(rec_audio, -1.0, 1.0)
+                        rec_audio_int16 = np.int16(rec_audio_clipped * 32767) 
+                        wav.write("/tmp/voice_cmd.wav", RATE, rec_audio_int16)
+                        
+                        with sr.AudioFile("/tmp/voice_cmd.wav") as source:
+                            audio_listened = r.record(source)
+                        try:
+                            text = r.recognize_google(audio_listened, language="zh-TW")
+                            sys_status["voice_cmd"] = f"[bold white]\"{text}\"[/bold white]"
+                            
+                            for keyword, target_idx in cmd_map.items():
+                                if keyword in text:
+                                    sys_status["voice_state"] = f"[bold red]🎯 LOCK: {keyword}[/bold red]"
+                                    voice_target_idx = target_idx
+                                    app_exit_flag = True
+                                    time.sleep(1.5) 
+                                    break
+                        except sr.UnknownValueError:
+                            sys_status["voice_cmd"] = "[dim]No clear speech[/dim]"
+                        except sr.RequestError:
+                            sys_status["voice_state"] = "[red]API NETWORK ERROR[/red]"
+                            time.sleep(1)
+                        
+                        audio_data = []
+                        is_recording = False
+                        recording_chunks = 0
+                        
+                        while not voice_queue.empty():
+                            voice_queue.get_nowait()
+                else:
+                    sys_status["voice_state"] = f"[cyan]▶ LST [{bar_str}] {vol:.3f}[/cyan]"
+                    
+        except Exception as e:
+            update_term_log(f"Mic Error: {e}", "WARN")
+            for i in range(3, 0, -1):
+                sys_status["voice_state"] = f"[red]ERROR ({i}s)[/red]"
+                time.sleep(1)
+                if not system_running: break
+        finally:
+            try:
+                stream.stop()
+                stream.close()
+            except: pass
+
+threading.Thread(target=voice_daemon, daemon=True).start()
 
 # ==========================================
 # 💡 3. LED 動態引擎與共用工具
@@ -484,23 +633,22 @@ def app_camera():
         picam2_global.stop()
         sys_status["cam"] = "[dim]Standby 🔴[/dim]"
 
-# ==========================================
-# 🎵 戰術三頻獨立鎖定 (Tri-Band Tactical Radar)
-# ==========================================
 def app_audio_fft():
     global app_exit_flag, led_mode
     app_exit_flag = False; led_mode = "AUDIO" 
     sys_status["app"] = "AUDIO RADAR"
+    
+    time.sleep(0.5) 
     
     CHUNK = 2048; RATE = 44100; BARS = 40 
     audio_queue = queue.Queue()
     freqs = np.fft.rfftfreq(CHUNK, 1 / RATE)
 
     def cb(indata, frames, time_info, status):
-        audio_queue.put(indata[:, 0].astype(np.float32) / 2147483648.0)
+        audio_queue.put((indata[:, 0].astype(np.float32) / 2147483648.0) * AUDIO_GAIN)
 
     draw_loading_screen("Acoustic Radar")
-    update_term_log("Initializing Tri-Band FFT Engine...")
+    update_term_log("Initializing Tri-Band FFT (ALSA Default)...")
     
     try:
         stream = sd.InputStream(samplerate=RATE, channels=2, dtype='int32', blocksize=CHUNK, callback=cb)
@@ -548,7 +696,7 @@ def app_audio_fft():
             draw_grid_bg(draw); draw_top_bar(draw)
 
             cx, cy = 160, 115
-            base_r = 25 + min(rms * 120, 20) 
+            base_r = 25 + min(rms * 60, 20) 
             
             draw.ellipse((cx-base_r, cy-base_r, cx+base_r, cy+base_r), outline=(0, 255, 255), width=2)
             draw.ellipse((cx-base_r+4, cy-base_r+4, cx+base_r-4, cy+base_r-4), outline=(0, 100, 200), width=1)
@@ -579,18 +727,11 @@ def app_audio_fft():
                 draw.line((lx1, ry1, lx2, ry2), fill=c, width=2)
                 draw.rectangle((lpx-1, rpy-1, lpx+1, rpy+1), fill=pc)
 
-            # ------------------------------------------
-            # 🎯 戰術三頻獨立鎖定框 (三等分對稱滿版佈局)
-            # ------------------------------------------
             draw.line((5, 193, 315, 193), fill=(0, 100, 200), width=1)
             for idx, (freq_val, color, label) in enumerate(top_f_bands):
-                # 3等分佈局: 起點 5, 110, 215 (每格寬度 100px，間距 5px)
                 x = 5 + idx * 105
                 draw.rectangle((x, 198, x+100, 236), outline=color, fill=(10, 20, 30))
-                
-                # 標籤與數值上下分層，完美解決 5 位數頻率超出框線問題
                 draw.text((x+5, 201), f"[{label}]", font=f_tiny, fill=color)
-                # 加入千位符號，大幅提升視覺專業度
                 draw.text((x+5, 216), f"{int(freq_val):,} Hz", font=f_item, fill=(255, 255, 255))
 
             push_to_screen(img)
@@ -781,7 +922,7 @@ def draw_main_menu(selected_idx):
     return img
 
 def main():
-    global app_exit_flag, screen_on, led_mode, system_running
+    global app_exit_flag, screen_on, led_mode, system_running, voice_target_idx
     
     os.system('cls' if os.name == 'nt' else 'clear')
     animation_boot()
@@ -789,6 +930,32 @@ def main():
 
     with Live(TacticalDashboard(), refresh_per_second=4, screen=False) as live:
         while system_running:
+            
+            if voice_target_idx is not None:
+                current_idx = voice_target_idx
+                voice_target_idx = None 
+                
+                play_tone(4000, 0.05, 0.5)
+                time.sleep(0.05)
+                play_tone(4000, 0.05, 0.5)
+                
+                update_term_log(f"[VOICE CMD] Override -> {MENU_ITEMS[current_idx][0]}", "WARN")
+                
+                action = MENU_ITEMS[current_idx][1]
+                if action == "EXIT":
+                    system_running = False 
+                    animation_shutdown(last_img if last_img else draw_main_menu(current_idx))
+                    break
+                else:
+                    app_exit_flag = False 
+                    action() 
+                    led_mode = "BREATHE"
+                    app_exit_flag = False 
+                    play_tone(800, 0.1); time.sleep(0.2)
+                    last_encoder = encoder.steps
+                    last_img = draw_main_menu(current_idx)
+                continue 
+
             if app_exit_flag:
                 app_exit_flag = False
                 screen_on = not screen_on
