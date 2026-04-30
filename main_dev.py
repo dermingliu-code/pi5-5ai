@@ -169,11 +169,26 @@ def handle_ko_press():
     
 btn_ko.when_pressed = handle_ko_press
 
-# 【參數優化】: 將增益放大至 25 倍，大幅提升麥克風物理靈敏度
-AUDIO_GAIN = 25.0 
+# ==========================================
+# 🎤 2.4 硬體麥克風探測器 
+# ==========================================
+def get_mic_device_id():
+    try:
+        devices = sd.query_devices()
+        for idx, dev in enumerate(devices):
+            name = dev['name'].lower()
+            if dev['max_input_channels'] > 0 and any(k in name for k in ['snd_rpi', 'i2s', 'inmp441', 'mic']):
+                update_term_log(f"Audio Hardware Found: [{idx}] {dev['name']}")
+                return idx
+        update_term_log("Specific I2S Mic not found, using default.", "WARN")
+        return None 
+    except:
+        return None
+
+MIC_DEVICE_ID = get_mic_device_id()
 
 # ==========================================
-# 🎤 2.5 終極無衝突語音引擎 (高靈敏度版)
+# 🎤 2.5 終極語音引擎 (高靈敏專屬通道)
 # ==========================================
 def voice_daemon():
     global voice_target_idx, app_exit_flag, system_running
@@ -191,10 +206,13 @@ def voice_daemon():
     }
 
     r = sr.Recognizer()
-    update_term_log("Voice Pipeline Active (High Sensitivity).")
+    update_term_log("Voice Pipeline Active.")
     
     RATE = 44100
     CHUNK = 8192  
+    
+    # 【解耦設計】：語音專屬 25 倍高靈敏度增益
+    VOICE_GAIN = 25.0 
 
     while system_running:
         if sys_status["app"] == "AUDIO RADAR":
@@ -205,7 +223,8 @@ def voice_daemon():
         voice_queue = queue.Queue()
 
         def voice_cb(indata, frames, time_info, status):
-            voice_queue.put((indata[:, 0].astype(np.float32) / 2147483648.0) * AUDIO_GAIN)
+            # 僅對語音引擎套用巨幅放大
+            voice_queue.put((indata[:, 0].astype(np.float32) / 2147483648.0) * VOICE_GAIN)
 
         sys_status["voice_state"] = "[cyan]▃▅▇ CALIBRATING NOISE...[/cyan]"
         try:
@@ -223,9 +242,8 @@ def voice_daemon():
                     samples.append(np.sqrt(np.mean(mono_data**2))) 
                 except: pass
             
-            # 【參數優化】: 降低底噪乘數至 1.2，使判定條件更寬鬆
             ambient_noise_level = max(np.mean(samples) * 1.2, 0.005) 
-            update_term_log(f"Noise Calibrated. Threshold: {ambient_noise_level:.4f}")
+            update_term_log(f"Voice Threshold: {ambient_noise_level:.4f}")
 
             audio_data = []
             is_recording = False
@@ -244,7 +262,6 @@ def voice_daemon():
                 bar_len = min(10, int(relative_vol * 400)) 
                 bar_str = "|" * bar_len + " " * (10 - bar_len)
                 
-                # 【參數優化】: 觸發條件從 1.5 倍降至 1.2 倍
                 if vol > ambient_noise_level * 1.2:
                     if not is_recording:
                         is_recording = True
@@ -633,6 +650,9 @@ def app_camera():
         picam2_global.stop()
         sys_status["cam"] = "[dim]Standby 🔴[/dim]"
 
+# ==========================================
+# 🎵 戰術三頻獨立鎖定 (解耦增益與 EMA 濾波完美版)
+# ==========================================
 def app_audio_fft():
     global app_exit_flag, led_mode
     app_exit_flag = False; led_mode = "AUDIO" 
@@ -643,17 +663,23 @@ def app_audio_fft():
     CHUNK = 2048; RATE = 44100; BARS = 40 
     audio_queue = queue.Queue()
     freqs = np.fft.rfftfreq(CHUNK, 1 / RATE)
+    
+    # 【解耦設計】：FFT 雷達專屬的小增益，保留動態感，拒絕滿載
+    FFT_GAIN = 1.5 
 
     def cb(indata, frames, time_info, status):
-        audio_queue.put((indata[:, 0].astype(np.float32) / 2147483648.0) * AUDIO_GAIN)
+        # 使用專屬 FFT_GAIN，不再受語音高倍率干擾
+        audio_queue.put((indata[:, 0].astype(np.float32) / 2147483648.0) * FFT_GAIN)
 
     draw_loading_screen("Acoustic Radar")
-    update_term_log("Initializing Tri-Band FFT (ALSA Default)...")
+    update_term_log("Initializing Tri-Band FFT (Decoupled Gain)...")
     
     try:
         stream = sd.InputStream(samplerate=RATE, channels=2, dtype='int32', blocksize=CHUNK, callback=cb)
         stream.start()
         
+        # 【視覺魔法】：EMA 平滑陣列
+        smoothed_bars = [0.0] * BARS
         peak_holds = [0.0] * BARS
         last_log_time = 0
         
@@ -684,7 +710,7 @@ def app_audio_fft():
                 (freqs[idx_hi],  (255, 50, 200), "HI ")  
             ]
             
-            binned = [np.max(b)*10 for b in bins]
+            raw_binned = [np.max(b)*10 for b in bins]
             sys_status["audio_freq"] = f"{int(freqs[idx_mid])}Hz"
             
             if time.time() - last_log_time > 2.0:
@@ -696,14 +722,18 @@ def app_audio_fft():
             draw_grid_bg(draw); draw_top_bar(draw)
 
             cx, cy = 160, 115
-            base_r = 25 + min(rms * 60, 20) 
+            base_r = 25 + min(rms * 100, 20) # 修正核心脈動比例
             
             draw.ellipse((cx-base_r, cy-base_r, cx+base_r, cy+base_r), outline=(0, 255, 255), width=2)
             draw.ellipse((cx-base_r+4, cy-base_r+4, cx+base_r-4, cy+base_r-4), outline=(0, 100, 200), width=1)
             draw.text((cx-12, cy-6), "FFT", font=f_small, fill=(0, 255, 255))
 
             for i in range(BARS):
-                val = binned[i]
+                # 【視覺魔法】：套用 EMA 指數平滑濾波，讓長條圖移動如水母般靈動滑順
+                target_val = raw_binned[i]
+                smoothed_bars[i] = smoothed_bars[i] * 0.65 + target_val * 0.35
+                val = smoothed_bars[i]
+                
                 if val > peak_holds[i]: peak_holds[i] = val
                 else: peak_holds[i] = max(0, peak_holds[i] - 0.05) 
 
